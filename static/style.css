@@ -88,11 +88,23 @@ input{font:inherit}
 /* ── сцена ──────────────────────────────────────────────────────────────── */
 .main{flex:1;display:flex;min-height:0}
 
+/* боковая панель: 236px в полном виде и рейка 56px в свёрнутом.
+   рейка остаётся рабочей — инструменты и палитра доступны и там. */
 .tools{
-  width:212px;flex:0 0 212px;
+  width:236px;flex:0 0 236px;
   border-right:1px solid var(--ln);background:var(--pn);
   padding:14px;display:flex;flex-direction:column;gap:16px;overflow-y:auto;
+  transition:width .16s ease,flex-basis .16s ease,padding .16s ease;
 }
+.wrap.side-collapsed .tools{width:56px;flex-basis:56px;padding:14px 9px}
+.wrap.side-collapsed .tools .lbl,
+.wrap.side-collapsed .tools .colorbtn span,
+.wrap.side-collapsed .tools .toggle span,
+.wrap.side-collapsed .tools .tool span{display:none}
+.wrap.side-collapsed .tools .colorbtn,
+.wrap.side-collapsed .tools .toggle{justify-content:center;padding:10px 0}
+.wrap.side-collapsed .tools input[type=range]{display:none}
+
 .toolgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .tool{
   display:flex;align-items:center;gap:7px;
@@ -108,6 +120,30 @@ input{font:inherit}
 
 .grp{display:flex;flex-direction:column;gap:9px}
 .lbl{font-size:11px;color:var(--mut);display:flex;justify-content:space-between}
+
+/* кнопка палитры: показывает выбранный цвет */
+.colorbtn{
+  display:flex;align-items:center;gap:9px;width:100%;
+  border:1px solid var(--ln2);border-radius:10px;background:var(--fld);
+  padding:9px 10px;color:var(--tx);font-size:12px;
+  transition:border-color .14s,color .14s;
+}
+.colorbtn:hover{border-color:var(--ac-line)}
+.colorbtn b{width:18px;height:18px;border-radius:6px;border:1px solid var(--ln2);flex:0 0 18px}
+.colorbtn i,.colorbtn svg{width:15px;height:15px;min-width:15px;min-height:15px;
+  display:block;flex:0 0 15px;margin-left:auto;stroke-width:1.8;color:var(--mut)}
+
+/* переключатель сглаживания */
+.toggle{
+  display:flex;align-items:center;gap:9px;width:100%;
+  border:1px solid var(--ln2);border-radius:10px;background:var(--fld);
+  padding:10px;color:var(--mut);font-size:12px;text-align:left;
+  transition:border-color .14s,color .14s,background .14s;
+}
+.toggle i,.toggle svg{width:15px;height:15px;min-width:15px;min-height:15px;
+  display:block;flex:0 0 15px;stroke-width:1.8}
+.toggle:hover{color:var(--tx);border-color:var(--ln2)}
+.toggle[aria-pressed="true"]{color:var(--ac);border-color:var(--ac-line);background:var(--ac-soft)}
 .lbl b{color:var(--tx);font-family:"JetBrains Mono",ui-monospace,monospace;font-weight:600}
 .swrow{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
 .sw{
@@ -252,3 +288,51 @@ kbd{
   .tool:hover{color:var(--mut);border-color:var(--ln)}
   .tool.on{color:var(--ac);border-color:var(--ac-line)}
 }
+
+/* ── палитра цвета ──────────────────────────────────────────────────────── */
+.palwrap{
+  position:fixed;inset:0;z-index:58;display:none;
+  align-items:center;justify-content:center;padding:20px;
+  background:rgba(10,10,12,.72);backdrop-filter:blur(4px);
+}
+.palwrap.open{display:flex}
+.pal{
+  width:100%;max-width:360px;max-height:min(560px,86vh);overflow-y:auto;
+  background:var(--pn);border:1px solid var(--ln2);border-radius:var(--r);
+  padding:16px;display:flex;flex-direction:column;gap:12px;
+}
+.palhd{display:flex;align-items:center;gap:8px}
+.palhd h3{font-size:14px;font-weight:600}
+
+.swrow.big{grid-template-columns:repeat(9,1fr);gap:6px}
+.swrow.big .sw{border-radius:8px}
+.recent .lbl{margin-bottom:7px}
+
+.hexrow{display:flex;gap:8px}
+.hexrow input{
+  flex:1;min-width:0;background:var(--fld);border:1px solid var(--ln2);
+  border-radius:9px;padding:10px 12px;color:var(--tx);outline:none;
+  font-family:"JetBrains Mono",ui-monospace,monospace;font-size:13px;
+}
+.hexrow input:focus-visible{border-color:var(--ac-line);outline:2px solid var(--ac-line);outline-offset:1px}
+.hexrow .btn{padding:10px 14px;white-space:nowrap}
+
+
+/* нативный выбор цвета: квадрат заливки + подпись, как кнопка палитры */
+.native{
+  display:flex;align-items:center;gap:9px;width:100%;
+  border:1px solid var(--ln2);border-radius:10px;background:var(--fld);
+  padding:8px 10px;color:var(--tx);font-size:12px;
+  transition:border-color .14s;
+}
+.native:hover{border-color:var(--ac-line)}
+.native input[type=color]{
+  width:26px;height:26px;flex:0 0 26px;padding:0;cursor:pointer;
+  border:1px solid var(--ln2);border-radius:7px;background:none;
+}
+.native input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
+.native input[type=color]::-webkit-color-swatch{border:0;border-radius:5px}
+.native i,.native svg{width:15px;height:15px;min-width:15px;min-height:15px;
+  display:block;flex:0 0 15px;stroke-width:1.8;color:var(--mut)}
+.wrap.side-collapsed .tools .native span{display:none}
+.wrap.side-collapsed .tools .native{justify-content:center;padding:8px 0}

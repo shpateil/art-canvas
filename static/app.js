@@ -28,9 +28,9 @@ function minZoom() {
   return Math.min(ZOOM_MAX, Math.max(W / WORLD.w, H / WORLD.h));
 }
 
-const COLORS = ["#ff2e9a", "#7c5cff", "#22d3ee", "#34d399", "#fbbf24", "#fb7185",
+const PALETTE = ["#ff2e9a", "#7c5cff", "#22d3ee", "#34d399", "#fbbf24", "#fb7185",
   "#a3e635", "#60a5fa", "#f472b6", "#facc15", "#2dd4bf", "#c084fc",
-  "#ffffff", "#0a0a0c"];
+  "#ffffff", "#0a0a0c", "#94a3b8", "#e2e8f0"];
 
 const TOOLS = {
   brush: { label: "кисть", icon: "brush" },
@@ -45,8 +45,10 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 const S = {
   tool: "brush",
   color: "#ff2e9a",
-  size: 6,
-  textSize: 28,
+  size: 5,        // процент от максимальной толщины
+  textSize: 6,    // процент от ширины экрана
+  smooth: true,   // плавные кривые вместо отрезков
+  recent: [],     // недавно выбранные цвета
   user: null,
   me: null,
   admin: false,
@@ -68,6 +70,7 @@ const mctx = mcv.getContext("2d");
 const buf = document.createElement("canvas");
 const bctx = buf.getContext("2d");
 let bufDirty = true;
+let drawnCount = 0;
 
 // offscreen миникарты. объявляем ЗДЕСЬ, а не рядом с функцией рисования:
 // resize() зовётся из boot() раньше, чем дошли бы до нижнего let, и
@@ -127,7 +130,7 @@ function zoomStep(f, ax, ay) {
 // верхнем углу (V.x = V.y = 0), и первые же движения вправо/вверх упирались
 // в границу мира — выглядело как «камера не едет».
 function startView() {
-  V.k = 1;
+  V.k = Math.max(1, minZoom());
   centerOn(WORLD.w / 2, WORLD.h / 2);
 }
 
@@ -164,28 +167,65 @@ function resize() {
   mbuf.width = mcv.width;
   mbuf.height = mcv.height;
   mbufDirty = true;
+  // если окно выросло, старый зум мог оказаться ниже нового минимума.
+  // без этого clampView центрирует обе оси и камера перестаёт двигаться,
+  // а зум-аут перестаёт работать — молча.
+  V.k = Math.max(minZoom(), Math.min(ZOOM_MAX, V.k));
   clampView();
   present();
 }
 
 // ── рисование операций ──────────────────────────────────────────────────────
+// ТОЛЩИНА. В операции лежит ПРОЦЕНТ от максимальной толщины, а не мировые
+// пиксели. Мировая толщина считается здесь, при отрисовке:
+//   size_мира = (pct / 100) * THICK_MAX_FRAC * W / k
+// тогда на экране получится size_мира * k = (pct / 100) * THICK_MAX_FRAC * W —
+// одна и та же величина при ЛЮБОМ зуме. Раньше толщина писалась в базу как
+// S.size / V.k, и нарисованное при зуме 1 при отдалении до 0.5 становилось
+// вдвое тоньше.
+// 100% ползунка — десятая доля ширины экрана. было 0.25 (четверть),
+// это давало 291px на широком мониторе — кисть выглядела веслом.
+const THICK_MAX_FRAC = 0.10;
+
+function widthOf(g, pct) {
+  return (pct / 100) * THICK_MAX_FRAC * W / V.k;
+}
+
+// СГЛАЖИВАНИЕ. Через середины соседних точек идут квадратичные кривые:
+// так штрих идёт плавной дугой, без углов в местах, где мышь дёрнулась.
+// отключается переключателем S.smooth для тех, кому нужен ровный отрезок.
+function pathThrough(g, pts) {
+  if (S.smooth && pts.length > 2) {
+    g.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i][0] + pts[i + 1][0]) / 2;
+      const my = (pts[i][1] + pts[i + 1][1]) / 2;
+      g.quadraticCurveTo(pts[i][0], pts[i][1], mx, my);
+    }
+    g.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+  } else {
+    g.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+  }
+}
+
 function strokeOn(g, o) {
   const p = o.pts;
   if (!p || !p.length) return;
+  const w = widthOf(g, o.size);
   g.strokeStyle = o.color;
   g.fillStyle = o.color;
-  g.lineWidth = o.size;
+  g.lineWidth = w;
   g.lineCap = "round";
   g.lineJoin = "round";
   if (p.length === 1) {
     g.beginPath();
-    g.arc(p[0][0], p[0][1], o.size / 2, 0, 7);
+    g.arc(p[0][0], p[0][1], w / 2, 0, 7);
     g.fill();
     return;
   }
   g.beginPath();
-  g.moveTo(p[0][0], p[0][1]);
-  for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
+  pathThrough(g, p);
   g.stroke();
 }
 
@@ -197,17 +237,17 @@ function eraseOn(g, o) {
   g.globalCompositeOperation = "destination-out";
   g.strokeStyle = "#000";
   g.fillStyle = "#000";
-  g.lineWidth = o.size;
+  const w = widthOf(g, o.size);
+  g.lineWidth = w;
   g.lineCap = "round";
   g.lineJoin = "round";
   if (p.length === 1) {
     g.beginPath();
-    g.arc(p[0][0], p[0][1], o.size / 2, 0, 7);
+    g.arc(p[0][0], p[0][1], w / 2, 0, 7);
     g.fill();
   } else {
     g.beginPath();
-    g.moveTo(p[0][0], p[0][1]);
-    for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
+    pathThrough(g, p);
     g.stroke();
   }
   g.restore();
@@ -215,7 +255,7 @@ function eraseOn(g, o) {
 
 function textOn(g, o) {
   g.fillStyle = o.color;
-  g.font = `600 ${o.size}px Manrope, system-ui, sans-serif`;
+  g.font = `600 ${widthOf(g, o.size)}px Manrope, system-ui, sans-serif`;
   g.textBaseline = "top";
   g.fillText(o.text, o.x, o.y);
 }
@@ -226,11 +266,22 @@ function drawOp(g, o) {
   else if (o.op === "erase") eraseOn(g, o);
 }
 
-// перестройка offscreen только когда список операций изменился
+// полная перестройка offscreen: только при загрузке доски и отмене
 function rebuild() {
   bctx.setTransform(1, 0, 0, 1, 0, 0);
   bctx.clearRect(0, 0, buf.width, buf.height);
   for (const o of S.ops) drawOp(bctx, o);
+  drawnCount = S.ops.length;
+  bufDirty = false;
+}
+
+// дорисовка новых операций на уже готовый буфер. раньше на КАЖДОЕ новое
+// действие буфер перерисовывался целиком, и при нескольких сотнях штрихов
+// это давало лаг на каждом кадре — штрих «пропадал» и проявлялся позже.
+function appendToBuf(op) {
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  drawOp(bctx, op);
+  drawnCount = S.ops.length;
   bufDirty = false;
 }
 
@@ -238,7 +289,11 @@ let live = null;
 
 // экран = трансформ + блит готового рисунка
 function present() {
-  if (bufDirty) rebuild();
+  // при большом расхождении догоняем полной перестройкой, иначе дорисовываем
+  if (bufDirty) {
+    if (S.ops.length - drawnCount > 24) rebuild();
+    else for (let i = drawnCount; i < S.ops.length; i++) appendToBuf(S.ops[i]);
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
@@ -280,17 +335,17 @@ function drawMiniOp(g, o) {
   g.save();
   g.strokeStyle = MINI_BG;
   g.fillStyle = MINI_BG;
-  g.lineWidth = o.size;
+  const w = widthOf(g, o.size);
+  g.lineWidth = w;
   g.lineCap = "round";
   g.lineJoin = "round";
   if (p.length === 1) {
     g.beginPath();
-    g.arc(p[0][0], p[0][1], o.size / 2, 0, 7);
+    g.arc(p[0][0], p[0][1], w / 2, 0, 7);
     g.fill();
   } else {
     g.beginPath();
-    g.moveTo(p[0][0], p[0][1]);
-    for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
+    pathThrough(g, p);
     g.stroke();
   }
   g.restore();
@@ -366,6 +421,11 @@ function miniJump(e) {
 // ── курсоры других ──────────────────────────────────────────────────────────
 function drawCursors() {
   const now = Date.now();
+  // чистим протухшие: иначе S.cursors растёт вечно и present() вызывается
+  // каждую секунду даже когда всех курсоров давно нет
+  for (const [login, p] of S.cursors) {
+    if (now - p.at > 15000) S.cursors.delete(login);
+  }
   ctx.save();
   ctx.setTransform(dpr * V.k, 0, 0, dpr * V.k, dpr * V.x, dpr * V.y);
   for (const [login, p] of S.cursors) {
@@ -472,8 +532,7 @@ cv.addEventListener("pointerdown", (e) => {
     op: S.tool === "eraser" ? "erase" : "stroke",
     pts: [[wx, wy]],
     color: S.color,
-    // толщина задаётся в экранных px, поэтому переводим в мировые
-    size: (S.tool === "eraser" ? Math.max(14, S.size * 4) : S.size) / V.k,
+    size: S.tool === "eraser" ? Math.min(100, S.size * 4) : S.size,
   });
 });
 
@@ -512,9 +571,20 @@ cv.addEventListener("pointermove", (e) => {
 
   const [wx, wy] = s2w(ax, ay);
   const last = live.pts[live.pts.length - 1];
-  if (Math.hypot(wx - last[0], wy - last[1]) > 1.2 / V.k) {
-    live.pts.push([wx, wy]);
-    if (live.pts.length > 1200) commit();
+  const dx = wx - last[0];
+  const dy = wy - last[1];
+  const dist = Math.hypot(dx, dy);
+  // между событиями мыши бывает прыжок в сотни пикселей. если просто
+  // добавить конечную точку, между ними получится прямой отрезок вместо
+  // дуги — отсюда «линии прямые». поэтому длинный шаг разбиваем
+  // промежуточными точками с шагом около двух экранных пикселей.
+  const step = 2 / V.k;
+  if (dist > step) {
+    const n = Math.min(400, Math.ceil(dist / step));
+    for (let i = 1; i <= n; i++) {
+      live.pts.push([last[0] + (dx * i) / n, last[1] + (dy * i) / n]);
+    }
+    if (live.pts.length > 4000) commit();
   }
   present();
 });
@@ -533,6 +603,11 @@ const finish = () => {
 
 cv.addEventListener("pointerup", finish);
 cv.addEventListener("pointercancel", finish);
+// если указатель отпущен вне холста (alt-tab, потеря фокуса), pointerup до
+// канваса не дойдёт и штрих останется «зажатым» — продолжит рисоваться сам
+window.addEventListener("pointerup", finish);
+window.addEventListener("pointercancel", finish);
+window.addEventListener("blur", finish);
 cv.addEventListener("contextmenu", (e) => {
   if (isPanGesture(e)) e.preventDefault();
 });
@@ -552,6 +627,15 @@ cv.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 window.addEventListener("keydown", (e) => {
+  if (e.altKey && e.key.toLowerCase() === "b") {
+    e.preventDefault();
+    toggleSide();
+    return;
+  }
+  if (e.key === "Escape" && $("#palWrap").classList.contains("open")) {
+    togglePalette();
+    return;
+  }
   if (e.code === "Space" && !e.repeat && e.target === document.body) {
     spaceDown = true;
     cv.style.cursor = "grab";
@@ -571,6 +655,11 @@ window.addEventListener("keydown", (e) => {
     if (e.key === "-" || e.key === "_") {
       e.preventDefault();
       zoomStep(1 / 1.2, W / 2, H / 2);
+      return;
+    }
+    if (e.key === "0") {
+      e.preventDefault();
+      startView();
       return;
     }
   }
@@ -620,17 +709,24 @@ function connect() {
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
     if (m.t === "ops") {
-      for (const o of m.ops) S.ops.push(o);
+      // эхо может прийти повторно: при переподключении или ретрансляции одна
+      // операция попадала в список дважды и штрих ложился вдвое плотнее.
+      // сверяемся по серверному id, а не доверяем порядку сообщений.
+      const known = new Set(S.ops.map((o) => o.id));
+      for (const o of m.ops) {
+        if (o.id != null && known.has(o.id)) continue;
+        if (o.id != null) known.add(o.id);
+        S.ops.push(o);
+      }
       bufDirty = true;
       mbufDirty = true;
       present();
-      bumpCount();
     } else if (m.t === "undo") {
       S.ops = S.ops.filter((x) => x.id !== m.id);
       bufDirty = true;
+      drawnCount = -1;   // помечаем, что проще перерисовать целиком
       mbufDirty = true;
       present();
-      bumpCount();
     } else if (m.t === "reload") {
       loadBoard();
     } else if (m.t === "presence") {
@@ -661,34 +757,138 @@ async function loadBoard() {
       mbufDirty = true;
   present();
   renderOnline();
-  bumpCount(d.count);
   if (firstBoard) { startView(); firstBoard = false; }
 }
 
-function bumpCount(n) {
-  $("#cnt").textContent = n != null ? n : S.ops.length;
-}
+// счётчик штрихов убран по требованию владельца: он считал в том числе
+// стёртые операции и вводил в заблуждение
+
 
 // ── интерфейс ───────────────────────────────────────────────────────────────
+// состояние вида и палитры живёт в localStorage: переживает перезагрузку
+const LS = "art_prefs";
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(LS) || "{}");
+    if (typeof p.smooth === "boolean") S.smooth = p.smooth;
+    if (Array.isArray(p.recent)) S.recent = p.recent.filter(isHex).slice(0, 12);
+    if (isHex(p.color)) S.color = p.color;
+    if (p.side === "collapsed") document.querySelector(".wrap").classList.add("side-collapsed");
+  } catch {}
+}
+function savePrefs() {
+  try {
+    const collapsed = document.querySelector(".wrap").classList.contains("side-collapsed");
+    localStorage.setItem(LS, JSON.stringify({
+      smooth: S.smooth, recent: S.recent, color: S.color, side: collapsed ? "collapsed" : "open",
+    }));
+  } catch {}
+}
+
+// проверка hex-цвета: ровно #rgb или #rrggbb, без мусора
+function isHex(v) {
+  return typeof v === "string" && /^#[0-9a-fA-F]{3}$|^#[0-9a-fA-F]{6}$/.test(v);
+}
+
+function rememberColor(c) {
+  S.recent = [c, ...S.recent.filter((x) => x.toLowerCase() !== c.toLowerCase())].slice(0, 12);
+}
+
 function setTool(t) {
   S.tool = t;
   $$(".tool").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
   cv.style.cursor = t === "hand" ? "grab" : "crosshair";
-  // толщина и размер текста при переносе не нужны
-  $("#szgrp").hidden = t === "hand";
+  // при переносе толщина и размер текста не нужны
   $("#tszgrp").hidden = t !== "text";
+  $("#sz").closest(".grp").hidden = t === "hand";
 }
 
 function syncColor() {
-  $$(".sw").forEach((b) => b.classList.toggle("on", b.dataset.c === S.color));
-  $("#sizeval").textContent = S.size + "px";
+  $("#colorDot").style.background = S.color;
+  $("#sizeval").textContent = S.size + "%";
   $("#sz").value = S.size;
-  $("#textsizeval").textContent = S.textSize + "px";
+  $("#textsizeval").textContent = S.textSize + "%";
   $("#tsz").value = S.textSize;
 }
 
+function pickColor(c) {
+  if (!isHex(c)) return;
+  S.color = c.toLowerCase();
+  if (S.tool === "eraser") setTool("brush");
+  rememberColor(S.color);
+  syncColor();
+  renderSwatches();
+  renderRecent();
+  savePrefs();
+}
+
+function renderSwatches() {
+  const sw = $("#swatches");
+  sw.innerHTML = "";
+  for (const c of PALETTE) {
+    const b = document.createElement("button");
+    b.className = "sw";
+    b.style.background = c;
+    b.title = c;
+    b.classList.toggle("on", c.toLowerCase() === S.color);
+    b.onclick = () => pickColor(c);
+    sw.appendChild(b);
+  }
+}
+
+function renderRecent() {
+  const box = $("#recent");
+  const row = $("#recentRow");
+  if (!S.recent.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  row.innerHTML = "";
+  for (const c of S.recent) {
+    const b = document.createElement("button");
+    b.className = "sw";
+    b.style.background = c;
+    b.title = c;
+    b.classList.toggle("on", c.toLowerCase() === S.color);
+    b.onclick = () => pickColor(c);
+    row.appendChild(b);
+  }
+}
+
+function applyHex() {
+  const inp = $("#hexInput");
+  const err = $("#hexErr");
+  let v = inp.value.trim();
+  if (v && !v.startsWith("#")) v = "#" + v;
+  if (!isHex(v)) {
+    err.textContent = "нужен цвет вида #ff2e9a";
+    return;
+  }
+  err.textContent = "";
+  pickColor(v);
+  inp.value = "";
+}
+
+function togglePalette() {
+  const w = $("#palWrap");
+  const open = w.classList.contains("open");
+  w.classList.toggle("open", !open);
+  if (!open) {
+    $("#hexInput").value = "";
+    $("#hexErr").textContent = "";
+    $("#nativeColor").value = S.color;
+  }
+}
+
+function toggleSide() {
+  document.querySelector(".wrap").classList.toggle("side-collapsed");
+  savePrefs();
+  resize();
+}
+
 function buildTools() {
-  const wrap = $("#tools");
+  const wrap = $("#toolsGrid");
   wrap.innerHTML = "";
   for (const [key, t] of Object.entries(TOOLS)) {
     const b = document.createElement("button");
@@ -699,23 +899,12 @@ function buildTools() {
     b.onclick = () => setTool(key);
     wrap.appendChild(b);
   }
-  const sw = $("#swatches");
-  sw.innerHTML = "";
-  for (const c of COLORS) {
-    const b = document.createElement("button");
-    b.className = "sw";
-    b.dataset.c = c;
-    b.style.background = c;
-    b.title = c;
-    b.onclick = () => {
-      S.color = c;
-      if (S.tool === "eraser") setTool("brush");
-      syncColor();
-    };
-    sw.appendChild(b);
-  }
   setTool("brush");
   syncColor();
+  renderSwatches();
+  renderRecent();
+  const sm = $("#smoothBtn");
+  sm.setAttribute("aria-pressed", S.smooth ? "true" : "false");
   if (window.lucide) lucide.createIcons();
 }
 
@@ -762,8 +951,10 @@ async function afterAuth() {
   }
   $("#who").textContent = S.user.login;
   $("#wdot").style.background = S.user.color;
-  $("#logout").classList.remove("hide");
-  $("#adminbtn").classList.toggle("hide", !S.admin);
+  // в разметке стоит атрибут hidden, а не класс: переключать класс .hide
+  // тут бесполезно, атрибут всегда сильнее и кнопка оставалась скрыта навсегда
+  $("#logout").hidden = false;
+  $("#adminbtn").hidden = !S.admin;
   closeGate();
   await loadBoard();
   connect();
@@ -913,10 +1104,32 @@ async function boot() {
     loadHistory();
     loadBoard();
   };
+  loadPrefs();
   $("#sz").addEventListener("input", (e) => {
     S.size = Number(e.target.value);
     syncColor();
   });
+  $("#sideToggle").onclick = toggleSide;
+  $("#colorBtn").onclick = togglePalette;
+  $("#palClose").onclick = togglePalette;
+  // нативный выбор цвета как на led: меняем значение и сразу применяем
+  const nc = $("#nativeColor");
+  nc.value = S.color;
+  nc.addEventListener("input", (e) => pickColor(e.target.value));
+  $("#hexOk").onclick = applyHex;
+  $("#hexInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") applyHex();
+  });
+  $("#palWrap").addEventListener("pointerdown", (e) => {
+    // клик по затемнению закрывает, клик по самой панели — нет
+    if (e.target === $("#palWrap")) togglePalette();
+  });
+  $("#smoothBtn").onclick = () => {
+    S.smooth = !S.smooth;
+    $("#smoothBtn").setAttribute("aria-pressed", S.smooth ? "true" : "false");
+    savePrefs();
+    present();
+  };
   $("#tsz").addEventListener("input", (e) => {
     S.textSize = Number(e.target.value);
     syncColor();
