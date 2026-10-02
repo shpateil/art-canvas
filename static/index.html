@@ -6,7 +6,7 @@
 <title>art — общий холст shpateil</title>
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="/static/favicon.svg">
-<link rel="stylesheet" href="/static/style.css?v=6">
+<link rel="stylesheet" href="/static/style.css?v=12">
 <script src="/static/lucide.min.js?v=1"></script>
 </head>
 <body>
@@ -49,28 +49,29 @@
         <div id="swatches" class="swrow"></div>
       </div>
 
-      <div class="grp">
+      <div class="grp" id="szgrp">
         <div class="lbl">толщина <b id="sizeval">6px</b></div>
         <input type="range" id="sz" min="1" max="60" value="6">
+      </div>
+
+      <div class="grp" id="tszgrp" hidden>
+        <div class="lbl">размер текста <b id="textsizeval">28px</b></div>
+        <input type="range" id="tsz" min="8" max="160" value="28">
       </div>
     </aside>
 
     <div class="stage">
       <canvas id="cv"></canvas>
-      <canvas id="cur"></canvas>
 
-      <!-- уменьшенная копия холста с рамкой обзора -->
-      <div class="mini" id="mini" title="мини-карта: клик переносит обзор">
+      <!-- уменьшенный весь холст с рамкой текущего обзора -->
+      <div class="mini" id="mini" title="клик и протягивание переносят обзор">
         <canvas id="mcv"></canvas>
-        <div class="mview" id="mview"></div>
       </div>
 
-      <!-- перемещение по холсту и масштаб -->
+      <!-- масштаб -->
       <div class="zoombar">
         <button class="ib" id="zout" title="отдалить"><i data-lucide="zoom-out"></i></button>
-        <button class="ib" id="zreset" title="сбросить масштаб"><i data-lucide="maximize"></i></button>
         <button class="ib" id="zin" title="приблизить"><i data-lucide="zoom-in"></i></button>
-        <button class="ib" id="zfit" title="показать всё"><i data-lucide="scan"></i></button>
       </div>
     </div>
 
@@ -109,7 +110,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=16"></script>
 <script>lucide.createIcons();</script>
 </body>
 </html>

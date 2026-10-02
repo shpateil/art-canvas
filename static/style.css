@@ -140,8 +140,7 @@ kbd{
 }
 
 .stage{flex:1;position:relative;min-width:0;background:var(--bg);overflow:hidden}
-#cv,#cur{position:absolute;inset:0;touch-action:none}
-#cur{pointer-events:none}
+#cv{position:absolute;inset:0;touch-action:none}
 
 /* миникарта: уменьшенный весь холст с рамкой обзора, в правом нижнем углу */
 .mini{
@@ -150,11 +149,7 @@ kbd{
   background:var(--pn);overflow:hidden;cursor:pointer;
   box-shadow:0 0 0 1px rgba(0,0,0,.35);
 }
-.mini #mcv{display:block;opacity:.92}
-.mini .mview{
-  position:absolute;border:1px solid var(--ac);
-  background:var(--ac-soft);pointer-events:none;border-radius:2px;
-}
+.mini #mcv{display:block}
 
 /* панель масштаба */
 .zoombar{
