@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>art — общий холст shpateil</title>
+<title>art — общий холст</title>
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="/static/favicon.svg">
-<link rel="stylesheet" href="/static/style.css?v=12">
+<link rel="stylesheet" href="/static/style.css?v=31">
 <script src="/static/lucide.min.js?v=1"></script>
 </head>
 <body>
@@ -14,13 +14,15 @@
 <div class="wrap">
 
   <header class="hd">
+    <button class="ib" id="sideToggle" title="свернуть панель (alt+b)">
+      <i data-lucide="panel-left"></i>
+    </button>
     <div class="brand">
-      <span class="cur">$</span><b>art</b><span class="mut dot">.</span><span class="mut">shpateil</span>
+      <span class="cur">$</span><b>art</b><span class="mut dot">.</span><span class="mut">example</span>
     </div>
     <div class="sp"></div>
     <div class="stat">
       <span class="idn"><i data-lucide="users"></i><b id="oncnt">0</b></span>
-      <span class="idn"><i data-lucide="pencil"></i><b id="cnt">0</b></span>
       <span class="net bad" id="net">переподключение</span>
     </div>
     <button class="ib" id="adminbtn" title="админ-панель" hidden>
@@ -41,22 +43,31 @@
 
   <div class="main">
 
-    <aside class="tools">
-      <div id="tools" class="toolgrid"></div>
+    <aside class="tools" id="tools">
+      <div id="toolsGrid" class="toolgrid"></div>
 
       <div class="grp">
-        <div class="lbl">цвет</div>
-        <div id="swatches" class="swrow"></div>
-      </div>
-
-      <div class="grp" id="szgrp">
-        <div class="lbl">толщина <b id="sizeval">6px</b></div>
-        <input type="range" id="sz" min="1" max="60" value="6">
+        <div class="lbl">толщина <b id="sizeval">4px</b></div>
+        <input type="range" id="sz" min="1" max="40" value="4">
       </div>
 
       <div class="grp" id="tszgrp" hidden>
         <div class="lbl">размер текста <b id="textsizeval">28px</b></div>
         <input type="range" id="tsz" min="8" max="160" value="28">
+      </div>
+
+      <div class="grp">
+        <button class="colorbtn" id="colorBtn" title="палитра">
+          <b id="colorDot"></b>
+          <span>палитра</span>
+          <i data-lucide="pipette"></i>
+        </button>
+      </div>
+
+      <div class="grp opt">
+        <button class="toggle" id="smoothBtn" aria-pressed="true">
+          <i data-lucide="spline"></i><span>сглаживание</span>
+        </button>
       </div>
     </aside>
 
@@ -75,6 +86,39 @@
       </div>
     </div>
 
+  </div>
+</div>
+
+<!-- палитра цвета -->
+<div class="palwrap" id="palWrap">
+  <div class="pal">
+    <div class="palhd">
+      <h3>цвет</h3>
+      <div class="sp"></div>
+      <button class="ib" id="palClose"><i data-lucide="x"></i></button>
+    </div>
+
+    <div class="recent" id="recent" hidden>
+      <div class="lbl">недавние</div>
+      <div class="swrow" id="recentRow"></div>
+    </div>
+
+    <!-- нативный выбор цвета. ВАЖНО: input[type=color] нельзя вкладывать
+         в button — браузер даёт ему размер 0x0 и клик перехватывает кнопка.
+         На led-сайте он стоит отдельным элементом, здесь так же. -->
+    <div class="native">
+      <input type="color" id="nativeColor" aria-label="выбрать любой цвет">
+      <div class="natxt"><b>любой цвет</b><span>окно с ползунком и пипеткой</span></div>
+    </div>
+
+    <div class="lbl">палитра</div>
+    <div class="swrow big" id="swatches"></div>
+
+    <div class="hexrow">
+      <input id="hexInput" placeholder="#ff2e9a" spellcheck="false" maxlength="7">
+      <button class="btn" id="hexOk">применить</button>
+    </div>
+    <div class="err" id="hexErr"></div>
   </div>
 </div>
 
@@ -110,7 +154,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js?v=16"></script>
+<script src="/static/app.js?v=31"></script>
 <script>lucide.createIcons();</script>
 </body>
 </html>

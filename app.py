@@ -16,6 +16,8 @@
 длиннее PTS_MAX, иначе клиент может забить память сервера.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import random
@@ -33,13 +35,16 @@ DATA = BASE / "data"
 DATA.mkdir(exist_ok=True)
 DB = DATA / "art.db"
 
-ADMIN_LOGIN = os.environ.get("ART_ADMIN_LOGIN", "shpateil")
+ADMIN_LOGIN = os.environ.get("ART_ADMIN_LOGIN", "admin")
 ADMIN_PASS = os.environ.get("ART_ADMIN_PASSWORD", "")
 
 LOGIN_RE = re.compile(r"^[a-zA-Z0-9_]{3,20}$")
 PASS_MIN = 6
 OPS_MAX = 20000
 PTS_MAX = 4000
+# 400 операций по 4000 точек в худшем случае упираются примерно в 1.5 МБ json,
+# поэтому 2 МБ хватает с запасом, а десятки мегабайт мусора уже не пролезут.
+BODY_MAX = 2 * 1024 * 1024
 COOKIE = "art_sid"
 TTL = 30 * 24 * 3600
 
@@ -47,7 +52,14 @@ COLORS = ["#ff2e9a", "#7c5cff", "#22d3ee", "#34d399", "#fbbf24", "#fb7185",
           "#a3e635", "#60a5fa", "#f472b6", "#facc15", "#2dd4bf", "#c084fc"]
 
 app = Flask(__name__, static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = BODY_MAX
 sock = Sock(app)
+
+
+@app.errorhandler(413)
+def too_big(_e):
+    # без этого werkzeug отдаёт свой html-трейсбек на 413, клиенту нужен json
+    return jsonify({"error": f"запрос больше {BODY_MAX // (1024 * 1024)} МБ"}), 413
 
 
 # ── база ────────────────────────────────────────────────────────────────────
@@ -116,15 +128,14 @@ def mksalt():
 
 
 def hashpass(pw, salt):
-    import hashlib
     h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 120_000)
     return h.hex()
 
 
 def check(pw, phash, salt):
-    import hashlib
     h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 120_000).hex()
-    return h == phash
+    # сравнение хешей постоянного времени, иначе по времени ответа можно подбирать
+    return hmac.compare_digest(h, phash or "")
 
 
 # ── сессии ──────────────────────────────────────────────────────────────────
@@ -142,21 +153,16 @@ def user_from_request():
     return row
 
 
-def touch(user):
-    if user["role"] == "admin" and user["salt"] == "":
-        # админ из .env: пароль проверяется напрямую, в базе он не лежит
-        return
-    pass
-
-
 def login_user(login, pw):
     d = db()
     row = d.execute("select * from users where login=? collate nocase", (login,)).fetchone()
     if not row:
         return None
     if row["salt"] == "":
+        # админ из .env: пароль в базе не лежит, сравниваем как есть, но тоже
+        # постоянного времени
         ok = (row["login"].lower() == ADMIN_LOGIN.lower() and ADMIN_PASS and
-              pw == ADMIN_PASS)
+              hmac.compare_digest(pw, ADMIN_PASS))
     else:
         ok = check(pw, row["phash"], row["salt"])
     if not ok:
@@ -171,8 +177,13 @@ def login_user(login, pw):
 # ── операции холста ─────────────────────────────────────────────────────────
 
 def norm_op(op, p):
-    """жёсткая валидация операции. мусор с клиента обязан отбрасываться, а не 500."""
-    if op not in ("stroke", "shape", "text", "erase", "fill", "clear"):
+    """жёсткая валидация операции. мусор с клиента обязан отбрасываться, а не 500.
+
+    size приходит в процентах от максимальной толщины кисти (1..100), у ластика
+    потолок выше. фигуры и заливки клиент больше не шлёт, поэтому их тут нет:
+    обработчик всё равно падал бы на отсутствующих ключах.
+    """
+    if op not in ("stroke", "text", "erase", "clear"):
         return None
     def num(v):
         try:
@@ -189,6 +200,10 @@ def norm_op(op, p):
         return v if re.match(r"^#[0-9a-fA-F]{3,8}$", v) else "#000000"
     def txt(v):
         return v[:120] if isinstance(v, str) else ""
+    # токен операции, по которому клиент узнаёт своё эхо. сервер его не
+    # разбирает и не доверяет, только возвращает как есть.
+    def cid(v):
+        return v[:64] if isinstance(v, str) else None
 
     if op == "stroke":
         pts = p.get("pts")
@@ -204,17 +219,8 @@ def norm_op(op, p):
         if len(clean) < 1:
             return None
         return {"op": op, "pts": clean, "color": col(p.get("color")),
-                "size": max(0.5, min(200.0, num(p.get("size")) or 4.0))}
-
-    if op == "shape":
-        kind = p.get("kind")
-        if kind not in ("line", "rect", "ellipse"):
-            return None
-        return {"op": op, "kind": kind, "x1": num(p["x1"]), "y1": num(p["y1"]),
-                "x2": num(p["x2"]), "y2": num(p["y2"]),
-                "color": col(p.get("color")),
-                "size": max(0.5, min(200.0, num(p.get("size")) or 4.0)),
-                "fill": bool(p.get("fill"))}
+                "size": max(1.0, min(100.0, num(p.get("size")) or 4.0)),
+                "cid": cid(p.get("cid"))}
 
     if op == "text":
         x, y = num(p.get("x")), num(p.get("y"))
@@ -222,11 +228,11 @@ def norm_op(op, p):
         if x is None or y is None or not t.strip():
             return None
         return {"op": op, "x": x, "y": y, "text": t, "color": col(p.get("color")),
-                "size": max(6.0, min(160.0, num(p.get("size")) or 24.0))}
+                "size": max(6.0, min(160.0, num(p.get("size")) or 24.0)),
+                "cid": cid(p.get("cid"))}
 
     if op == "erase":
         # ластик = кисть со стиранием, поэтому несёт те же pts, что и штрих.
-        # раньше тут ждали x1/y1/x2/y2, и новая полилиния отфильтровывалась.
         pts = p.get("pts")
         if not isinstance(pts, list) or not pts or len(pts) > PTS_MAX:
             return None
@@ -240,17 +246,21 @@ def norm_op(op, p):
         if not clean:
             return None
         return {"op": op, "pts": clean,
-                "size": max(1.0, min(400.0, num(p.get("size")) or 40.0))}
-
-    if op == "fill":
-        x, y = num(p.get("x")), num(p.get("y"))
-        if x is None or y is None:
-            return None
-        return {"op": op, "x": x, "y": y, "color": col(p.get("color"))}
+                "size": max(1.0, min(400.0, num(p.get("size")) or 40.0)),
+                "cid": cid(p.get("cid"))}
 
     if op == "clear":
         return {"op": op}
     return None
+
+
+def has_clear(ops):
+    """чистка ищется во всём батче, а не в первом элементе.
+
+    раньше смотрели только на clean[0], поэтому батч [{stroke},{clear}] от обычного
+    юзера проходил и холст стирался.
+    """
+    return any(o.get("op") == "clear" for o in ops)
 
 
 def load_ops(limit=OPS_MAX):
@@ -305,6 +315,23 @@ def broadcast(msg, skip=None):
 
 
 CLIENTS = set()
+
+# соответствие user_id → его живые сокеты. нужно чтобы бан обрывал уже открытые
+# соединения, а не только блокировал новые handshake.
+CLIENTS_BY_UID = {}
+
+
+def drop_clients(uid, why):
+    """разорвать все websocket-соединения пользователя (бан, разлогин)."""
+    for c in list(CLIENTS_BY_UID.get(uid, ())):
+        try:
+            c.send(json.dumps({"t": "err", "error": why}, ensure_ascii=False))
+            c.close()
+        except Exception:
+            # сокет уже мёртв, чистить будем в его собственном finally
+            pass
+        CLIENTS.discard(c)
+    CLIENTS_BY_UID.pop(uid, None)
 
 
 # ── страницы ────────────────────────────────────────────────────────────────
@@ -405,7 +432,8 @@ def push_ops():
     if not clean:
         return jsonify({"error": "ничего не принято"}), 400
     d = db()
-    if clean[0]["op"] == "clear" and u["role"] != "admin":
+    clear = has_clear(clean)
+    if clear and u["role"] != "admin":
         return jsonify({"error": "чистить холст может только админ"}), 403
     now = int(time.time())
     ids = []
@@ -413,7 +441,7 @@ def push_ops():
         cur = d.execute("insert into ops(user_id,op,payload,created_at) values(?,?,?,?)",
                         (u["id"], o["op"], json.dumps(o, ensure_ascii=False), now))
         ids.append(cur.lastrowid)
-    if clean[0]["op"] == "clear":
+    if clear:
         d.execute("delete from ops")
         d.commit()
     else:
@@ -453,7 +481,11 @@ def history():
     if not u:
         return jsonify({"error": "нужен вход"}), 401
     d = db()
-    n = max(1, min(300, int(request.args.get("n", 120))))
+    try:
+        n = max(1, min(300, int(request.args.get("n", 120))))
+    except (TypeError, ValueError):
+        # мусорный ?n= должен давать дефолт, а не 500
+        n = 120
     rows = d.execute(
         "select o.id,o.op,o.payload,o.created_at,u.login,u.color as ucolor "
         "from ops o join users u on u.id=o.user_id "
@@ -541,13 +573,23 @@ def admin_user():
         broadcast({"t": "reload"})
         return jsonify({"ok": True})
     if action == "ban":
+        # соль 'banned' и пустой хеш — это и есть признак бана: логин больше не
+        # проходит check(), потому что хеш не сойдётся никогда
         d.execute("update users set phash='', salt='banned' where id=?", (row["id"],))
         d.execute("delete from sessions where user_id=?", (row["id"],))
         d.commit()
-        return jsonify({"ok": True})
-    d.execute("update users set salt=mksalt(), phash=? where id=?",
-              (hashpass("123456", mksalt()), row["id"]))
-    return jsonify({"ok": True})
+        # живые websocket-соединения проверяют бан только в цикле приёма, поэтому
+        # рвём их сразу, иначе забаненный дошлёт операции до конца таймаута
+        drop_clients(row["id"], "бан")
+        return jsonify({"ok": True, "banned": True})
+    # unban: пароль сбрасывается на 123456, соль и хеш обязаны считаться от
+    # одной и той же соли, иначе пароль не подойдёт никогда
+    salt = mksalt()
+    d.execute("update users set salt=?, phash=? where id=?",
+              (salt, hashpass("123456", salt), row["id"]))
+    d.execute("delete from sessions where user_id=?", (row["id"],))
+    d.commit()
+    return jsonify({"ok": True, "unbanned": True})
 
 
 # ── websocket ───────────────────────────────────────────────────────────────
@@ -577,20 +619,42 @@ def ws(ws):
     uid = u["id"]
     PRESENCE[uid] = {"login": u["login"], "color": u["color"], "seen": time.time()}
     CLIENTS.add(ws)
+    CLIENTS_BY_UID.setdefault(uid, set()).add(ws)
+    # соединение считается рабочим, пока сессия жива в базе: бан удаляет сессии,
+    # поэтому проверка в цикле ловит бан без всякого второго канала
+    def alive():
+        return d.execute("select 1 from sessions where token=?",
+                         (tok,)).fetchone() is not None
     ws.send(json.dumps({"t": "hello", "login": u["login"], "color": u["color"],
                         "role": u["role"]}))
     broadcast({"t": "presence", "online": online_users()})
     last_beat = 0.0
+    # счётчик тишины. simple_websocket.receive(timeout=25) возвращает None и
+    # на таймауте, и когда данных просто нет — из этого нельзя отличить
+    # «клиент жив и молчит» от «клиент исчез, но сокет не закрыт». раньше
+    # цикл на None делал continue и не выходил НИКОГДА: соединение жило вечно,
+    # finally не выполнялся, PRESENCE не чистился, юзер навсегда «онлайн».
+    # клиент шлёт ping каждые 15с, поэтому 8 тихих окон по 25с (200с) это
+    # гарантированно мёртвое соединение.
+    silent = 0
     try:
         while True:
             raw = ws.receive(timeout=25)
+            # сессию могли снести пока сокет был открыт (бан/логаут): без этой
+            # проверки забаненный слал бы операции до конца таймаута
+            if not alive():
+                break
             if raw is None:
+                silent += 1
+                if silent >= 8:
+                    break
                 PRESENCE[uid]["seen"] = time.time()
                 now = time.time()
                 if now - last_beat > 10:
                     broadcast({"t": "presence", "online": online_users()})
                     last_beat = now
                 continue
+            silent = 0
             try:
                 m = json.loads(raw)
             except ValueError:
@@ -599,7 +663,10 @@ def ws(ws):
             if not isinstance(m, dict):
                 continue
             t = m.get("t")
-            if t == "pong":
+            if t == "pong" or t == "ping":
+                # ping шлёт клиент каждые 15с: он сбрасывает счётчик тишины
+                # и доказывает серверу что сокет живой. ответ не нужен —
+                # presence уже рассылается по своему таймеру
                 continue
             if t == "cursor":
                 PRESENCE[uid].update({"x": m.get("x"), "y": m.get("y")})
@@ -615,7 +682,8 @@ def ws(ws):
                          if o]
                 if not clean:
                     continue
-                if clean[0]["op"] == "clear" and u["role"] != "admin":
+                clear = has_clear(clean)
+                if clear and u["role"] != "admin":
                     continue
                 now = int(time.time())
                 ids = []
@@ -624,7 +692,7 @@ def ws(ws):
                         "insert into ops(user_id,op,payload,created_at) values(?,?,?,?)",
                         (uid, o["op"], json.dumps(o, ensure_ascii=False), now))
                     ids.append(cur.lastrowid)
-                if clean[0]["op"] == "clear":
+                if clear:
                     d.execute("delete from ops")
                 else:
                     d.execute(
@@ -646,6 +714,11 @@ def ws(ws):
         pass
     finally:
         CLIENTS.discard(ws)
+        mine = CLIENTS_BY_UID.get(uid)
+        if mine is not None:
+            mine.discard(ws)
+            if not mine:
+                CLIENTS_BY_UID.pop(uid, None)
         PRESENCE.pop(uid, None)
         broadcast({"t": "presence", "online": online_users()})
         d.close()
