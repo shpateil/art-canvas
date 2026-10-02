@@ -1,0 +1,26 @@
+# локальное окружение и база
+venv/
+data/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+
+# секреты
+.env
+*.env
+art.env
+
+# конфиги деплоя с путями конкретной машины
+art.service
+art.nginx.conf
+art.acme.conf
+
+# тесты и мусор разработки
+tests/
+*.bak
+*.bak-*
+probe*
+scratch/
+.playwright-mcp/
