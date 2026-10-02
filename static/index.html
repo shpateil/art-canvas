@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>art — общий холст shpateil</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="icon" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css?v=21">
+<script src="/static/lucide.min.js?v=1"></script>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="hd">
+    <button class="ib" id="sideToggle" title="свернуть панель (alt+b)">
+      <i data-lucide="panel-left"></i>
+    </button>
+    <div class="brand">
+      <span class="cur">$</span><b>art</b><span class="mut dot">.</span><span class="mut">shpateil</span>
+    </div>
+    <div class="sp"></div>
+    <div class="stat">
+      <span class="idn"><i data-lucide="users"></i><b id="oncnt">0</b></span>
+      <span class="net bad" id="net">переподключение</span>
+    </div>
+    <button class="ib" id="adminbtn" title="админ-панель" hidden>
+      <i data-lucide="shield"></i>
+    </button>
+    <button class="ib" id="undo" title="отменить (ctrl+z)"><i data-lucide="undo-2"></i></button>
+    <button class="ib" id="logout" title="выйти"><i data-lucide="log-out"></i></button>
+  </header>
+
+  <div class="bar">
+    <div class="who-row">
+      <b id="wdot"></b>
+      <span id="who">гость</span>
+      <span class="mut">сейчас на холсте:</span>
+      <span id="online" class="online"></span>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <aside class="tools" id="tools">
+      <div id="toolsGrid" class="toolgrid"></div>
+
+      <div class="grp">
+        <div class="lbl">толщина <b id="sizeval">4%</b></div>
+        <input type="range" id="sz" min="1" max="100" value="4">
+      </div>
+
+      <div class="grp" id="tszgrp" hidden>
+        <div class="lbl">размер текста <b id="textsizeval">6%</b></div>
+        <input type="range" id="tsz" min="1" max="100" value="6">
+      </div>
+
+      <div class="grp">
+        <button class="colorbtn" id="colorBtn" title="палитра">
+          <b id="colorDot"></b>
+          <span>палитра</span>
+          <i data-lucide="pipette"></i>
+        </button>
+      </div>
+
+      <div class="grp opt">
+        <button class="toggle" id="smoothBtn" aria-pressed="true">
+          <i data-lucide="spline"></i><span>сглаживание</span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="stage">
+      <canvas id="cv"></canvas>
+
+      <!-- уменьшенный весь холст с рамкой текущего обзора -->
+      <div class="mini" id="mini" title="клик и протягивание переносят обзор">
+        <canvas id="mcv"></canvas>
+      </div>
+
+      <!-- масштаб -->
+      <div class="zoombar">
+        <button class="ib" id="zout" title="отдалить"><i data-lucide="zoom-out"></i></button>
+        <button class="ib" id="zin" title="приблизить"><i data-lucide="zoom-in"></i></button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- палитра цвета -->
+<div class="palwrap" id="palWrap">
+  <div class="pal">
+    <div class="palhd">
+      <h3>цвет</h3>
+      <div class="sp"></div>
+      <button class="ib" id="palClose"><i data-lucide="x"></i></button>
+    </div>
+
+    <div class="recent" id="recent" hidden>
+      <div class="lbl">недавние</div>
+      <div class="swrow" id="recentRow"></div>
+    </div>
+
+    <!-- нативный выбор цвета: открывается сразу и умеет пипетку,
+         как на led-сайте. без него приходилось бы листать палитру -->
+    <button class="native" id="nativeBtn">
+      <input type="color" id="nativeColor" aria-label="выбрать любой цвет">
+      <i data-lucide="pipette"></i>
+      <span>любой цвет</span>
+    </button>
+
+    <div class="lbl">палитра</div>
+    <div class="swrow big" id="swatches"></div>
+
+    <div class="hexrow">
+      <input id="hexInput" placeholder="#ff2e9a" spellcheck="false" maxlength="7">
+      <button class="btn" id="hexOk">применить</button>
+    </div>
+    <div class="err" id="hexErr"></div>
+  </div>
+</div>
+
+<!-- вход и регистрация -->
+<div class="gate" id="gate">
+  <div class="gbox">
+    <button class="ib gclose" id="gclose"><i data-lucide="x"></i></button>
+    <h2 id="gtitle">вход</h2>
+    <p class="mut" id="gsub">введи логин и пароль</p>
+    <input id="glogin" placeholder="логин" autocomplete="username" spellcheck="false">
+    <input id="gpw" type="password" placeholder="пароль" autocomplete="current-password">
+    <div class="err" id="gerr"></div>
+    <button class="btn primary" id="gsend">войти</button>
+    <button class="btn" id="greg">регистрация</button>
+  </div>
+</div>
+
+<!-- админ-панель -->
+<aside class="panel" id="panel">
+  <div class="phd">
+    <h2>админ-панель</h2>
+    <div class="sp"></div>
+    <button class="ib" id="pclose"><i data-lucide="x"></i></button>
+  </div>
+  <div class="tabs" id="ptabs">
+    <button class="on" data-t="hist">кто что рисовал</button>
+    <button data-t="users">люди</button>
+  </div>
+  <div class="plist" id="hlist"></div>
+  <div class="plist" id="ulist" hidden></div>
+  <button class="btn danger" id="pclear">стереть весь холст</button>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js?v=21"></script>
+<script>lucide.createIcons();</script>
+</body>
+</html>
