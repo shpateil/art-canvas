@@ -92,19 +92,19 @@ function viewH() { return H / V.k; }
 
 // V.x ≤ 0: 0 — левый край мира, (vw - WORLD.w) — правый край.
 // Если окно шире мира, камера центрируется.
+// V.x/V.y — сдвиг мира относительно экрана В ЭКРАННЫХ пикселях:
+// он идёт прямо в трансформ setTransform(..., dpr*V.x, dpr*V.y).
+// поэтому границы панорамы считаются через W - WORLD.w * V.k, а НЕ через
+// viewW() = W / V.k: это величина в мировых пикселях, и сравнение с V.x
+// смешивало единицы. Из-за этого на зуме 2x правый край холста был виден
+// только до 1497 из 2400, а на 4x — до 823, то есть 38% и 66% холста
+// были недостижимы.
+// V.x может быть положительным — это когда мир уже меньше окна.
 function clampView() {
-  const vw = viewW();
-  const vh = viewH();
-  if (vw >= WORLD.w) {
-    V.x = (WORLD.w - vw) / 2;
-  } else {
-    V.x = Math.min(0, Math.max(vw - WORLD.w, V.x));
-  }
-  if (vh >= WORLD.h) {
-    V.y = (WORLD.h - vh) / 2;
-  } else {
-    V.y = Math.min(0, Math.max(vh - WORLD.h, V.y));
-  }
+  const loX = W - WORLD.w * V.k;
+  const loY = H - WORLD.h * V.k;
+  V.x = loX > 0 ? loX / 2 : Math.min(0, Math.max(loX, V.x));
+  V.y = loY > 0 ? loY / 2 : Math.min(0, Math.max(loY, V.y));
 }
 
 function setZoom(k, ax, ay) {
@@ -330,11 +330,11 @@ function drawMini() {
   mctx.restore();
 
   // рамка текущего обзора: заливка + рамка, обрезана по миру
-  // ВАЖНО: V.x/V.y отрицательные — это сдвиг мира относительно экрана.
-  // Поэтому левый край обзора в мире это -V.x, и на карте его место
-  // ox + (-V.x) * s. Со знаком плюс рамка уезжала зеркально в другую сторону.
-  const vx = ox - V.x * s;
-  const vy = oy - V.y * s;
+  // Левый край обзора в мире это -V.x / V.k, потому что V.x задан в
+  // экранных пикселях. Делить на k обязательно: без этого на зуме 4x рамка
+  // уезжала на 468px при ширине карты 360 и её не было видно совсем.
+  const vx = ox - (V.x / V.k) * s;
+  const vy = oy - (V.y / V.k) * s;
   const vw = viewW() * s;
   const vh = viewH() * s;
   mctx.save();
