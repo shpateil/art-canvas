@@ -200,6 +200,10 @@ def norm_op(op, p):
         return v if re.match(r"^#[0-9a-fA-F]{3,8}$", v) else "#000000"
     def txt(v):
         return v[:120] if isinstance(v, str) else ""
+    # токен операции, по которому клиент узнаёт своё эхо. сервер его не
+    # разбирает и не доверяет, только возвращает как есть.
+    def cid(v):
+        return v[:64] if isinstance(v, str) else None
 
     if op == "stroke":
         pts = p.get("pts")
@@ -215,7 +219,8 @@ def norm_op(op, p):
         if len(clean) < 1:
             return None
         return {"op": op, "pts": clean, "color": col(p.get("color")),
-                "size": max(1.0, min(100.0, num(p.get("size")) or 4.0))}
+                "size": max(1.0, min(100.0, num(p.get("size")) or 4.0)),
+                "cid": cid(p.get("cid"))}
 
     if op == "text":
         x, y = num(p.get("x")), num(p.get("y"))
@@ -223,7 +228,8 @@ def norm_op(op, p):
         if x is None or y is None or not t.strip():
             return None
         return {"op": op, "x": x, "y": y, "text": t, "color": col(p.get("color")),
-                "size": max(6.0, min(160.0, num(p.get("size")) or 24.0))}
+                "size": max(6.0, min(160.0, num(p.get("size")) or 24.0)),
+                "cid": cid(p.get("cid"))}
 
     if op == "erase":
         # ластик = кисть со стиранием, поэтому несёт те же pts, что и штрих.
@@ -240,7 +246,8 @@ def norm_op(op, p):
         if not clean:
             return None
         return {"op": op, "pts": clean,
-                "size": max(1.0, min(400.0, num(p.get("size")) or 40.0))}
+                "size": max(1.0, min(400.0, num(p.get("size")) or 40.0)),
+                "cid": cid(p.get("cid"))}
 
     if op == "clear":
         return {"op": op}

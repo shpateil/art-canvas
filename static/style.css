@@ -32,6 +32,13 @@ body{
 .mut{color:var(--mut)}
 .sp{flex:1}
 .hide{display:none !important}
+/* Атрибут hidden должен побеждать ЛЮБОЕ правило класса. Без этого
+   display:grid у .ib и display:flex у .grp/.plist перебивают [hidden] из
+   user-agent стилей, и элемент остаётся видимым: кнопка админки показывалась
+   всем подряд, хотя в разметке стоял hidden. Замер: атрибут hidden был true,
+   а getComputedStyle отдавал display:grid, ширина 34px.
+   Специфичность [hidden] из UA низкая, поэтому нужен !important. */
+[hidden]{display:none !important}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 input{font:inherit}
 
