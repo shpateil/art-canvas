@@ -1,12 +1,32 @@
 // art.example.com — общий холст с регистрацией.
 //
-// СИСТЕМА КООРДИНАТ. Операции хранятся в МИРОВЫХ координатах (большой холст
-// WORLD), экран — это «камера» с отступом V.x/V.y и масштабом V.k. Раньше
-// координаты были экранными, поэтому при переносе или зуме рисунок уезжал и
-// разные участники видели разное.
+// КАМЕРА. Операции лежат в мировых координатах на холсте WORLD. Экран показывает
+// окно этого мира: V.x/V.y — смещение мира относительно экрана (всегда ≤ 0),
+// V.k — масштаб. Раньше координаты были экранными, поэтому при переносе или
+// зуме рисунок уезжал и разные участники видели разное.
+//
+// ПРОИЗВОДИТЕЛЬНОСТЬ. Рисунок не перерисовывается на каждый кадр: он живёт в
+// offscreen-канвасе и перестраивается только когда изменился список операций.
+// Панорама и зум просто блитят готовую картинку с трансформом, поэтому мышь не
+// лагает даже на тысяче штрихов.
 
-const WORLD = { w: 6000, h: 4000 };
-const MINI_W = 168;
+const WORLD = { w: 2400, h: 1600 };
+// ширина миникарты. на узком экране ужимается, иначе она закрывает
+// почти половину холста вместе с панелью инструментов
+function miniWidth() {
+  if (W < 560) return 132;
+  if (W < 900) return 220;
+  return 360;
+}
+const MINI_H = Math.round((360 * WORLD.h) / WORLD.w);
+const ZOOM_MAX = 8;
+// минимальный зум не фиксирован: ниже предела, при котором весь холст
+// помещается в окно, отдалять бессмысленно — и именно там ломалось.
+// при k меньше этого окно шире мира, clampView центрирует камеру,
+// и она перестаёт двигаться вообще.
+function minZoom() {
+  return Math.min(ZOOM_MAX, Math.max(W / WORLD.w, H / WORLD.h));
+}
 
 const COLORS = ["#ff2e9a", "#7c5cff", "#22d3ee", "#34d399", "#fbbf24", "#fb7185",
   "#a3e635", "#60a5fa", "#f472b6", "#facc15", "#2dd4bf", "#c084fc",
@@ -26,6 +46,7 @@ const S = {
   tool: "brush",
   color: "#ff2e9a",
   size: 6,
+  textSize: 28,
   user: null,
   me: null,
   admin: false,
@@ -40,64 +61,84 @@ const V = { x: 0, y: 0, k: 1 };
 
 const cv = $("#cv");
 const ctx = cv.getContext("2d");
-const cvs = $("#cur");
-const gcur = cvs.getContext("2d");
 const mcv = $("#mcv");
 const mctx = mcv.getContext("2d");
+
+// offscreen: готовый рисунок мира, перестраивается только при смене ops
+const buf = document.createElement("canvas");
+const bctx = buf.getContext("2d");
+let bufDirty = true;
+
+// offscreen миникарты. объявляем ЗДЕСЬ, а не рядом с функцией рисования:
+// resize() зовётся из boot() раньше, чем дошли бы до нижнего let, и
+// обращение к mbufDirty давало "Cannot access 'mbufDirty' before initialization".
+const mbuf = document.createElement("canvas");
+const mbctx = mbuf.getContext("2d");
+let mbufDirty = true;
+// камеру ставим по центру только один раз, при первой загрузке доски:
+// при обновлениях (reload) она не должна прыгать обратно
+let firstBoard = true;
+
+// фон панели миникарты: им же закрашивается стёртое
+const MINI_BG = "#0e0e13";
 
 let dpr = 1;
 let W = 0;
 let H = 0;
 
-// ── экран ⇄ мир ─────────────────────────────────────────────────────────────
-const s2w = (x, y) => [(x - V.x) / V.k, (y - V.y) / V.k];
-
+// ── камера ──────────────────────────────────────────────────────────────────
 function viewW() { return W / V.k; }
 function viewH() { return H / V.k; }
 
-// не даём уехать за пределы холста; если окно больше мира — центрируем
+// V.x ≤ 0: 0 — левый край мира, (vw - WORLD.w) — правый край.
+// Если окно шире мира, камера центрируется.
 function clampView() {
   const vw = viewW();
   const vh = viewH();
-  // V.x это сдвиг МИРА относительно экрана, поэтому он отрицательный:
-  // 0 — левый край мира, (vw - WORLD.w) — правый.
-  // Раньше тут стояло Math.max(WORLD.w - vw, ...) — это положительное число,
-  // и внешний Math.min(0, ...) срезал V.x в ноль при ЛЮБОМ переносе.
-  V.x = Math.min(0, Math.max(vw - WORLD.w, V.x));
-  V.y = Math.min(0, Math.max(vh - WORLD.h, V.y));
+  if (vw >= WORLD.w) {
+    V.x = (WORLD.w - vw) / 2;
+  } else {
+    V.x = Math.min(0, Math.max(vw - WORLD.w, V.x));
+  }
+  if (vh >= WORLD.h) {
+    V.y = (WORLD.h - vh) / 2;
+  } else {
+    V.y = Math.min(0, Math.max(vh - WORLD.h, V.y));
+  }
 }
 
 function setZoom(k, ax, ay) {
-  const nk = Math.max(0.2, Math.min(6, k));
+  const nk = Math.max(minZoom(), Math.min(ZOOM_MAX, k));
+  // держим точку под курсором на месте
   const wx = (ax - V.x) / V.k;
   const wy = (ay - V.y) / V.k;
   V.k = nk;
   V.x = ax - wx * nk;
   V.y = ay - wy * nk;
   clampView();
-  render();
+  present();
 }
 
 function zoomStep(f, ax, ay) {
   setZoom(V.k * f, ax, ay);
 }
 
-function resetView() {
+// стартовый вид: 100% и по центру холста. раньше камера стояла в левом
+// верхнем углу (V.x = V.y = 0), и первые же движения вправо/вверх упирались
+// в границу мира — выглядело как «камера не едет».
+function startView() {
   V.k = 1;
-  V.x = 0;
-  V.y = 0;
-  clampView();
-  render();
+  centerOn(WORLD.w / 2, WORLD.h / 2);
 }
 
-function fitAll() {
-  const k = Math.min(W / WORLD.w, H / WORLD.h);
-  V.k = Math.max(0.2, Math.min(6, k));
-  V.x = (W - WORLD.w * V.k) / 2;
-  V.y = (H - WORLD.h * V.k) / 2;
+function centerOn(wx, wy) {
+  V.x = W / 2 - wx * V.k;
+  V.y = H / 2 - wy * V.k;
   clampView();
-  render();
+  present();
 }
+
+
 
 // ── размеры ─────────────────────────────────────────────────────────────────
 function resize() {
@@ -105,23 +146,30 @@ function resize() {
   dpr = Math.min(2, window.devicePixelRatio || 1);
   W = Math.max(320, Math.floor(r.width));
   H = Math.max(320, Math.floor(r.height));
-  for (const c of [cv, cvs]) {
-    c.width = Math.floor(W * dpr);
-    c.height = Math.floor(H * dpr);
-    c.style.width = W + "px";
-    c.style.height = H + "px";
-  }
-  const mh = Math.round(MINI_W * WORLD.h / WORLD.w);
-  mcv.width = Math.floor(MINI_W * dpr);
+  cv.width = Math.floor(W * dpr);
+  cv.height = Math.floor(H * dpr);
+  cv.style.width = W + "px";
+  cv.style.height = H + "px";
+  const mw = miniWidth();
+  const mh = Math.round((mw * WORLD.h) / WORLD.w);
+  mcv.width = Math.floor(mw * dpr);
   mcv.height = Math.floor(mh * dpr);
-  mcv.style.width = MINI_W + "px";
+  // без явного css-размера на dpr=2 канвас занимает внутренний размер
+  // экранными пикселями, и клик по миникарте попадает не туда
+  mcv.style.width = mw + "px";
   mcv.style.height = mh + "px";
+  buf.width = WORLD.w;
+  buf.height = WORLD.h;
+  bufDirty = true;
+  mbuf.width = mcv.width;
+  mbuf.height = mcv.height;
+  mbufDirty = true;
   clampView();
-  render();
+  present();
 }
 
-// ── отрисовка операций (в мировых координатах) ─────────────────────────────
-function stroke(g, o) {
+// ── рисование операций ──────────────────────────────────────────────────────
+function strokeOn(g, o) {
   const p = o.pts;
   if (!p || !p.length) return;
   g.strokeStyle = o.color;
@@ -173,111 +221,171 @@ function textOn(g, o) {
 }
 
 function drawOp(g, o) {
-  if (o.op === "stroke") stroke(g, o);
+  if (o.op === "stroke") strokeOn(g, o);
   else if (o.op === "text") textOn(g, o);
   else if (o.op === "erase") eraseOn(g, o);
 }
 
+// перестройка offscreen только когда список операций изменился
+function rebuild() {
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.clearRect(0, 0, buf.width, buf.height);
+  for (const o of S.ops) drawOp(bctx, o);
+  bufDirty = false;
+}
+
 let live = null;
 
-function render() {
+// экран = трансформ + блит готового рисунка
+function present() {
+  if (bufDirty) rebuild();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+
+  ctx.save();
   ctx.setTransform(dpr * V.k, 0, 0, dpr * V.k, dpr * V.x, dpr * V.y);
-  for (const o of S.ops) drawOp(ctx, o);
+  // рамка мира, чтобы границы холста было видно
+  ctx.strokeStyle = "rgba(255,255,255,.12)";
+  ctx.lineWidth = 1 / V.k;
+  ctx.strokeRect(0, 0, WORLD.w, WORLD.h);
+  ctx.drawImage(buf, 0, 0);
   if (live) drawOp(ctx, live);
+  ctx.restore();
+
   drawMini();
   drawCursors();
 }
 
-// ── миникарта в правом нижнем углу ──────────────────────────────────────────
-function drawMini() {
-  const s = mcv.width / WORLD.w;
-  mctx.setTransform(1, 0, 0, 1, 0, 0);
-  mctx.clearRect(0, 0, mcv.width, mctx.height);
-  // рисуем со сдвигом внутрь, иначе граница мира ложилась ровно на край
-  // canvas и её срезала рамка контейнера — её не было видно
-  const ins = 2 * dpr;
-  const bw = mcv.width - ins * 2;
-  const bh = mcv.height - ins * 2;
-  const ss = Math.min(bw / WORLD.w, bh / WORLD.h);
-  const ox = ins + (bw - WORLD.w * ss) / 2;
-  const oy = ins + (bh - WORLD.h * ss) / 2;
+// ── миникарта ───────────────────────────────────────────────────────────────
+// размеры считаем от размера канваса, а не от css: иначе на dpr=2 рамка уезжает
+function miniMetrics() {
+  const pad = 3 * dpr;
+  const iw = mcv.width - pad * 2;
+  const ih = mcv.height - pad * 2;
+  const s = Math.min(iw / WORLD.w, ih / WORLD.h);
+  return {
+    s,
+    ox: pad + (iw - WORLD.w * s) / 2,
+    oy: pad + (ih - WORLD.h * s) / 2,
+  };
+}
 
-  // граница мира — заметная, а не 1px в углу
+// стирание на миникарте — это заливка фоном, а не destination-out:
+// destination-out на карте вырезал бы дыру, и на тёмной подложке
+// результат выглядел бы как ничего не стёртое.
+function drawMiniOp(g, o) {
+  if (o.op !== "erase") return drawOp(g, o);
+  const p = o.pts;
+  if (!p || !p.length) return;
+  g.save();
+  g.strokeStyle = MINI_BG;
+  g.fillStyle = MINI_BG;
+  g.lineWidth = o.size;
+  g.lineCap = "round";
+  g.lineJoin = "round";
+  if (p.length === 1) {
+    g.beginPath();
+    g.arc(p[0][0], p[0][1], o.size / 2, 0, 7);
+    g.fill();
+  } else {
+    g.beginPath();
+    g.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
+    g.stroke();
+  }
+  g.restore();
+}
+
+function rebuildMini() {
+  const g = mbctx;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, mbuf.width, mbuf.height);
+  const { s, ox, oy } = miniMetrics();
+  // подложка: без неё миникарта прозрачная и стёртое «просвечивает»
+  g.fillStyle = MINI_BG;
+  g.fillRect(ox, oy, WORLD.w * s, WORLD.h * s);
+  g.save();
+  g.beginPath();
+  g.rect(ox, oy, WORLD.w * s, WORLD.h * s);
+  g.clip();
+  g.translate(ox, oy);
+  g.scale(s, s);
+  for (const o of S.ops) drawMiniOp(g, o);
+  g.restore();
+  mbufDirty = false;
+}
+
+function drawMini() {
+  if (mbufDirty) rebuildMini();
+  const { s, ox, oy } = miniMetrics();
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.clearRect(0, 0, mcv.width, mcv.height);
+  mctx.drawImage(mbuf, 0, 0);
+
+  // граница мира
   mctx.save();
   mctx.strokeStyle = "rgba(255,255,255,.28)";
-  mctx.lineWidth = Math.max(1, Math.round(dpr));
-  mctx.strokeRect(ox, oy, WORLD.w * ss, WORLD.h * ss);
+  mctx.lineWidth = dpr;
+  mctx.strokeRect(ox, oy, WORLD.w * s, WORLD.h * s);
   mctx.restore();
 
-  // рисунок в масштабе карты
-  mctx.save();
-  mctx.translate(ox, oy);
-  mctx.scale(ss, ss);
-  for (const o of S.ops) {
-    if (o.op === "erase") continue;
-    drawOp(mctx, o);
-  }
-  mctx.restore();
-
-  // прямоугольник текущего обзора: заливка + заметная рамка
-  const vx = ox + V.x * ss;
-  const vy = oy + V.y * ss;
-  const vw = viewW() * ss;
-  const vh = viewH() * ss;
+  // рамка текущего обзора: заливка + рамка, обрезана по миру
+  // ВАЖНО: V.x/V.y отрицательные — это сдвиг мира относительно экрана.
+  // Поэтому левый край обзора в мире это -V.x, и на карте его место
+  // ox + (-V.x) * s. Со знаком плюс рамка уезжала зеркально в другую сторону.
+  const vx = ox - V.x * s;
+  const vy = oy - V.y * s;
+  const vw = viewW() * s;
+  const vh = viewH() * s;
   mctx.save();
   mctx.beginPath();
-  mctx.rect(ox, oy, WORLD.w * ss, WORLD.h * ss);
+  mctx.rect(ox, oy, WORLD.w * s, WORLD.h * s);
   mctx.clip();
-  mctx.fillStyle = "rgba(255,46,154,.10)";
+  mctx.fillStyle = "rgba(255,46,154,.12)";
   mctx.fillRect(vx, vy, vw, vh);
   mctx.strokeStyle = "#ff2e9a";
   mctx.lineWidth = 2 * dpr;
   mctx.strokeRect(vx, vy, vw, vh);
   mctx.restore();
-
-  // рамку обзора дублируем в css поверх canvas — так её видно всегда
-  const box = $("#mview");
-  box.style.left = (vx / dpr) + "px";
-  box.style.top = (vy / dpr) + "px";
-  box.style.width = (vw / dpr) + "px";
-  box.style.height = (vh / dpr) + "px";
 }
 
+// клик или протягивание по миникарте — центрирует обзор
 function miniJump(e) {
+  const { s, ox, oy } = miniMetrics();
   const r = mcv.getBoundingClientRect();
-  const mx = (e.clientX - r.left) / r.width;
-  const my = (e.clientY - r.top) / r.height;
-  V.x = mx * WORLD.w - viewW() / 2;
-  V.y = my * WORLD.h - viewH() / 2;
-  clampView();
-  render();
+  const px = (e.clientX - r.left) * dpr;
+  const py = (e.clientY - r.top) * dpr;
+  const wx = (px - ox) / s;
+  const wy = (py - oy) / s;
+  centerOn(
+    Math.max(0, Math.min(WORLD.w, wx)),
+    Math.max(0, Math.min(WORLD.h, wy))
+  );
 }
 
 // ── курсоры других ──────────────────────────────────────────────────────────
 function drawCursors() {
-  gcur.setTransform(dpr, 0, 0, dpr, 0, 0);
-  gcur.clearRect(0, 0, W, H);
-  gcur.setTransform(dpr * V.k, 0, 0, dpr * V.k, dpr * V.x, dpr * V.y);
   const now = Date.now();
+  ctx.save();
+  ctx.setTransform(dpr * V.k, 0, 0, dpr * V.k, dpr * V.x, dpr * V.y);
   for (const [login, p] of S.cursors) {
     if (now - p.at > 6000 || !S.me || login === S.me.login) continue;
     if (p.x == null || p.y == null) continue;
-    gcur.save();
-    gcur.strokeStyle = p.color;
-    gcur.fillStyle = p.color;
-    gcur.lineWidth = 2 / V.k;
-    gcur.beginPath();
-    gcur.arc(p.x, p.y, 5 / V.k, 0, 7);
-    gcur.stroke();
-    gcur.font = `600 ${11 / V.k}px Manrope, system-ui, sans-serif`;
-    const w = gcur.measureText(login).width + 10 / V.k;
-    gcur.fillRect(p.x + 9 / V.k, p.y - 8 / V.k, w, 16 / V.k);
-    gcur.fillStyle = "#0a0a0c";
-    gcur.fillText(login, p.x + 14 / V.k, p.y + 4 / V.k);
-    gcur.restore();
+    ctx.save();
+    ctx.strokeStyle = p.color;
+    ctx.fillStyle = p.color;
+    ctx.lineWidth = 2 / V.k;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 5 / V.k, 0, 7);
+    ctx.stroke();
+    ctx.font = `600 ${11 / V.k}px Manrope, system-ui, sans-serif`;
+    const w = ctx.measureText(login).width + 10 / V.k;
+    ctx.fillRect(p.x + 9 / V.k, p.y - 8 / V.k, w, 16 / V.k);
+    ctx.fillStyle = "#0a0a0c";
+    ctx.fillText(login, p.x + 14 / V.k, p.y + 4 / V.k);
+    ctx.restore();
   }
+  ctx.restore();
 }
 
 // ── ввод ────────────────────────────────────────────────────────────────────
@@ -285,6 +393,8 @@ function pos(e) {
   const r = cv.getBoundingClientRect();
   return [e.clientX - r.left, e.clientY - r.top];
 }
+
+const s2w = (x, y) => [(x - V.x) / V.k, (y - V.y) / V.k];
 
 let drawing = false;
 let panning = null;
@@ -294,7 +404,7 @@ let pinch = null;
 
 function pushLive(o) {
   live = o;
-  render();
+  present();
 }
 
 function commit() {
@@ -351,7 +461,7 @@ cv.addEventListener("pointerdown", (e) => {
     const t = prompt("текст");
     if (t && t.trim()) {
       pushLive({ op: "text", x: wx, y: wy, text: t.trim(),
-                 color: S.color, size: (S.size < 10 ? 24 : S.size) / V.k });
+                 color: S.color, size: S.textSize / V.k });
       commit();
     }
     drawing = false;
@@ -375,13 +485,13 @@ cv.addEventListener("pointermove", (e) => {
   if (pinch && ptrs.size === 2) {
     const [a, b] = [...ptrs.values()];
     const dist = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1;
-    const nk = Math.max(0.2, Math.min(6, pinch.k * (dist / pinch.dist)));
+    const nk = Math.max(minZoom(), Math.min(ZOOM_MAX, pinch.k * (dist / pinch.dist)));
     V.k = nk;
     // держим точку, которая была под серединой щипка
     V.x = pinch.mx - pinch.wx * nk;
     V.y = pinch.my - pinch.wy * nk;
     clampView();
-    render();
+    present();
     return;
   }
 
@@ -389,7 +499,7 @@ cv.addEventListener("pointermove", (e) => {
     V.x = panning.vx + (ax - panning.x);
     V.y = panning.vy + (ay - panning.y);
     clampView();
-    render();
+    present();
     return;
   }
 
@@ -406,7 +516,7 @@ cv.addEventListener("pointermove", (e) => {
     live.pts.push([wx, wy]);
     if (live.pts.length > 1200) commit();
   }
-  render();
+  present();
 });
 
 const finish = () => {
@@ -423,23 +533,22 @@ const finish = () => {
 
 cv.addEventListener("pointerup", finish);
 cv.addEventListener("pointercancel", finish);
-cv.addEventListener("pointerleave", finish);
 cv.addEventListener("contextmenu", (e) => {
-  if (isPanGesture(e) || S.tool === "hand") e.preventDefault();
+  if (isPanGesture(e)) e.preventDefault();
 });
 
-// колесо: сдвиг по осям, ctrl/⌘ — масштаб
+// колесо: сдвиг по осям, ctrl/⌘ — масштаб к курсору
 cv.addEventListener("wheel", (e) => {
   e.preventDefault();
   const [ax, ay] = pos(e);
   if (e.ctrlKey || e.metaKey) {
-    zoomStep(e.deltaY < 0 ? 1.12 : 1 / 1.12, ax, ay);
+    zoomStep(e.deltaY < 0 ? 1.15 : 1 / 1.15, ax, ay);
     return;
   }
   V.x -= e.deltaX;
   V.y -= e.deltaY;
   clampView();
-  render();
+  present();
 }, { passive: false });
 
 window.addEventListener("keydown", (e) => {
@@ -464,11 +573,6 @@ window.addEventListener("keydown", (e) => {
       zoomStep(1 / 1.2, W / 2, H / 2);
       return;
     }
-    if (e.key === "0") {
-      e.preventDefault();
-      resetView();
-      return;
-    }
   }
   const map = { b: "brush", e: "eraser", t: "text", h: "hand" };
   const k = map[e.key.toLowerCase()];
@@ -483,9 +587,6 @@ window.addEventListener("keyup", (e) => {
 });
 
 // ── сеть ────────────────────────────────────────────────────────────────────
-// wsSend ВОЗВРАЩАЕТ true, когда реально отправил. Раньше возвращал undefined,
-// и send() после успешной отправки всё равно клал сообщение в очередь —
-// flushQueue() слал его вторым разом. каждая операция дублировалась в базе.
 function wsSend(o) {
   if (S.ws && S.ws.readyState === 1) {
     S.ws.send(JSON.stringify(o));
@@ -495,7 +596,6 @@ function wsSend(o) {
 }
 function send(o) {
   if (wsSend(o)) return;
-  // нет связи — кладём в очередь, она уйдёт при переподключении
   S.queue.push(o);
 }
 function flushQueue() {
@@ -520,13 +620,16 @@ function connect() {
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
     if (m.t === "ops") {
-      // операции приходят уже с серверным id и автором — просто добавляем
       for (const o of m.ops) S.ops.push(o);
-      render();
+      bufDirty = true;
+      mbufDirty = true;
+      present();
       bumpCount();
     } else if (m.t === "undo") {
       S.ops = S.ops.filter((x) => x.id !== m.id);
-      render();
+      bufDirty = true;
+      mbufDirty = true;
+      present();
       bumpCount();
     } else if (m.t === "reload") {
       loadBoard();
@@ -535,6 +638,7 @@ function connect() {
       renderOnline();
     } else if (m.t === "cursor") {
       S.cursors.set(m.login, { x: m.x, y: m.y, color: m.color, at: Date.now() });
+      present();
     } else if (m.t === "err") {
       toast(m.error || "ошибка");
     }
@@ -553,9 +657,12 @@ async function loadBoard() {
   const d = await r.json();
   S.ops = d.ops || [];
   S.online = d.online || [];
-  render();
+  bufDirty = true;
+      mbufDirty = true;
+  present();
   renderOnline();
   bumpCount(d.count);
+  if (firstBoard) { startView(); firstBoard = false; }
 }
 
 function bumpCount(n) {
@@ -567,12 +674,17 @@ function setTool(t) {
   S.tool = t;
   $$(".tool").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
   cv.style.cursor = t === "hand" ? "grab" : "crosshair";
+  // толщина и размер текста при переносе не нужны
+  $("#szgrp").hidden = t === "hand";
+  $("#tszgrp").hidden = t !== "text";
 }
 
 function syncColor() {
   $$(".sw").forEach((b) => b.classList.toggle("on", b.dataset.c === S.color));
   $("#sizeval").textContent = S.size + "px";
   $("#sz").value = S.size;
+  $("#textsizeval").textContent = S.textSize + "px";
+  $("#tsz").value = S.textSize;
 }
 
 function buildTools() {
@@ -766,6 +878,12 @@ function toast(msg) {
 async function boot() {
   buildTools();
   resize();
+  // ResizeObserver, а не только window.resize: панель инструментов на узком
+  // экране сворачивается и сцена меняет ширину без события resize окна.
+  // из-за этого W расходился с реальным размером канваса и рисунок ехал.
+  try {
+    new ResizeObserver(() => resize()).observe(cv.parentElement);
+  } catch {}
   window.addEventListener("resize", resize);
 
   $("#glogin").addEventListener("keydown", (e) => {
@@ -799,17 +917,27 @@ async function boot() {
     S.size = Number(e.target.value);
     syncColor();
   });
+  $("#tsz").addEventListener("input", (e) => {
+    S.textSize = Number(e.target.value);
+    syncColor();
+  });
   $("#zin").onclick = () => zoomStep(1.25, W / 2, H / 2);
   $("#zout").onclick = () => zoomStep(1 / 1.25, W / 2, H / 2);
-  $("#zreset").onclick = resetView;
-  $("#zfit").onclick = fitAll;
+
+  // миникарта: клик и протягивание
+  let miniDrag = false;
   mcv.addEventListener("pointerdown", (e) => {
+    miniDrag = true;
     try { mcv.setPointerCapture(e.pointerId); } catch {}
     miniJump(e);
+    e.preventDefault();
   });
   mcv.addEventListener("pointermove", (e) => {
-    if (e.buttons & 1) miniJump(e);
+    if (miniDrag) miniJump(e);
   });
+  mcv.addEventListener("pointerup", () => { miniDrag = false; });
+  mcv.addEventListener("pointercancel", () => { miniDrag = false; });
+
   $("#ptabs").querySelectorAll("button").forEach((b) => {
     b.onclick = () => {
       $("#ptabs").querySelectorAll("button").forEach((x) => x.classList.remove("on"));
@@ -824,7 +952,9 @@ async function boot() {
   setInterval(() => {
     if (S.admin && $("#panel").classList.contains("open")) loadHistory();
   }, 15000);
-  setInterval(drawCursors, 1000);
+  setInterval(() => {
+    if (S.cursors.size) present();
+  }, 1000);
 }
 
 boot();
